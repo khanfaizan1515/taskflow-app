@@ -1,5 +1,8 @@
 version: 2.1
 
+orbs:
+  aws-cli: circleci/aws-cli@5.4.1
+
 jobs:
   test-and-build:
     docker:
@@ -16,7 +19,79 @@ jobs:
           name: Build production application
           command: npm run build
 
+  build-push-update-gitops:
+    docker:
+      - image: cimg/base:stable
+    environment:
+      AWS_DEFAULT_REGION: ap-south-1
+      AWS_REGION: ap-south-1
+      ECR_REPO: 977232999886.dkr.ecr.ap-south-1.amazonaws.com/taskflow
+    steps:
+      - checkout
+
+      - aws-cli/setup:
+          role_arn: arn:aws:iam::977232999886:role/CircleCITaskFlowECRRole
+          region: ap-south-1
+
+      - setup_remote_docker
+
+      - run:
+          name: Build and push Docker image to ECR
+          command: |
+            set -euo pipefail
+
+            IMAGE_TAG="${CIRCLE_SHA1}"
+
+            aws ecr get-login-password --region "$AWS_REGION" \
+              | docker login --username AWS --password-stdin \
+                977232999886.dkr.ecr.ap-south-1.amazonaws.com
+
+            docker build -t "${ECR_REPO}:${IMAGE_TAG}" .
+            docker push "${ECR_REPO}:${IMAGE_TAG}"
+
+      - run:
+          name: Update GitOps manifest
+          command: |
+            set -euo pipefail
+
+            test -n "${GH_TOKEN:-}" || {
+              echo "GH_TOKEN is missing from CircleCI project environment variables."
+              exit 1
+            }
+
+            AUTH_HEADER="$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
+
+            git -c http.extraheader="AUTHORIZATION: basic ${AUTH_HEADER}" \
+              clone https://github.com/khanfaizan1515/taskflow-gitops.git
+
+            cd taskflow-gitops
+
+            git config user.name "CircleCI"
+            git config user.email "circleci@users.noreply.github.com"
+
+            sed -i \
+              "s#image: .*taskflow:.*#image: ${ECR_REPO}:${CIRCLE_SHA1}#" \
+              deployment.yaml
+
+            git add deployment.yaml
+
+            if git diff --cached --quiet; then
+              echo "No GitOps manifest changes detected."
+              exit 0
+            fi
+
+            git commit -m "Deploy TaskFlow image ${CIRCLE_SHA1}"
+
+            git -c http.extraheader="AUTHORIZATION: basic ${AUTH_HEADER}" \
+              push origin main
+
 workflows:
-  taskflow-ci:
+  taskflow-ci-cd:
     jobs:
       - test-and-build
+      - build-push-update-gitops:
+          requires:
+            - test-and-build
+          filters:
+            branches:
+              only: main
