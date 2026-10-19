@@ -1,0 +1,22 @@
+version: 2.1
+
+jobs:
+  test-and-build:
+    docker:
+      - image: cimg/node:20.19
+    steps:
+      - checkout
+      - run:
+          name: Install dependencies
+          command: npm ci
+      - run:
+          name: Run React tests
+          command: CI=true npm test -- --watchAll=false
+      - run:
+          name: Build production application
+          command: npm run build
+
+workflows:
+  taskflow-ci:
+    jobs:
+      - test-and-build
