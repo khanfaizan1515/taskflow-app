@@ -10,3 +10,8 @@ coverage/
 /circleci-trust-policy.json
 /github-ecr-policy.json
 /github-trust-policy.json
+
+# Terraform local files
+terraform/.terraform/
+terraform/terraform.tfstate*
+terraform/*.tfplan

@@ -1,0 +1,6 @@
+aws_region         = "ap-south-1"
+project_name       = "taskflow"
+environment        = "study"
+vpc_cidr           = "10.20.0.0/16"
+kubernetes_version = "1.36"
+node_instance_type = "t3.small"
