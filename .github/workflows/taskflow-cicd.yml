@@ -1,0 +1,113 @@
+
+name: TaskFlow CI/CD
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  AWS_REGION: ap-south-1
+  ECR_REPOSITORY: taskflow
+  AWS_ACCOUNT_ID: "977232999886"
+  GITOPS_REPOSITORY: khanfaizan1515/taskflow-gitops
+
+jobs:
+  test:
+    name: Test and Build React App
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run React tests
+        run: CI=true npm test -- --watchAll=false
+
+      - name: Build React app
+        run: npm run build
+
+  build-push-update:
+    name: Push Image and Update GitOps
+    needs: test
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Log in to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push Docker image
+        id: build-image
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          aws ecr describe-repositories \
+            --repository-names "$ECR_REPOSITORY" \
+            --region "$AWS_REGION"
+
+          docker build -t "$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" .
+          docker push "$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
+
+          echo "image=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Update GitOps repository
+        env:
+          GH_TOKEN: ${{ secrets.GITOPS_TOKEN }}
+          IMAGE: ${{ steps.build-image.outputs.image }}
+        run: |
+          set -euo pipefail
+          test -n "$GH_TOKEN" || {
+            echo "Missing GITOPS_TOKEN repository secret."
+            exit 1
+          }
+
+          git clone \
+            "https://x-access-token:${GH_TOKEN}@github.com/${GITOPS_REPOSITORY}.git" \
+            gitops
+
+          cd gitops
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          grep -q 'image:' deployment.yaml || {
+            echo "No image field found in deployment.yaml"
+            exit 1
+          }
+
+          sed -i "/image:/s#image:.*#image: ${IMAGE}#" deployment.yaml
+
+          git add deployment.yaml
+
+          if git diff --cached --quiet; then
+            echo "No manifest changes detected."
+            exit 0
+          fi
+
+          git commit -m "Deploy TaskFlow image ${GITHUB_SHA}"
+          git push origin HEAD:main
