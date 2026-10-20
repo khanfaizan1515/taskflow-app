@@ -4,3 +4,9 @@ build/
 .env.*
 !.env.example
 coverage/
+
+# Local IAM policy files (do not commit)
+/circleci-ecr-policy.json
+/circleci-trust-policy.json
+/github-ecr-policy.json
+/github-trust-policy.json
